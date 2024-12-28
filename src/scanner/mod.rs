@@ -1,6 +1,6 @@
 //! Core functionality for actual scanning behaviour.
+use crate::generated::get_parsed_data;
 use crate::port_strategy::PortStrategy;
-use crate::udp_packets::udp_payload::cust_payload;
 use log::debug;
 
 mod socket_iterator;
@@ -11,6 +11,7 @@ use async_std::prelude::*;
 use async_std::{io, net::UdpSocket};
 use colored::Colorize;
 use futures::stream::FuturesUnordered;
+use std::collections::BTreeMap;
 use std::{
     collections::HashSet,
     net::{IpAddr, Shutdown, SocketAddr},
@@ -24,8 +25,6 @@ use std::{
 /// batch_size is how many ports at a time should be scanned
 /// Timeout is the time RustScan should wait before declaring a port closed. As datatype Duration.
 /// greppable is whether or not RustScan should print things, or wait until the end to print only the ip and open ports.
-/// Added by wasuaje - 01/26/2024:
-///     exclude_ports  is an exclusion port list
 #[cfg(not(tarpaulin_include))]
 #[derive(Debug)]
 pub struct Scanner {
@@ -70,8 +69,6 @@ impl Scanner {
     /// Runs scan_range with chunk sizes
     /// If you want to run RustScan normally, this is the entry point used
     /// Returns all open ports as `Vec<u16>`
-    /// Added by wasuaje - 01/26/2024:
-    ///    Filtering port against exclude port list
     pub async fn run(&self) -> Vec<SocketAddr> {
         let ports: Vec<u16> = self
             .port_strategy
@@ -84,10 +81,11 @@ impl Scanner {
         let mut open_sockets: Vec<SocketAddr> = Vec::new();
         let mut ftrs = FuturesUnordered::new();
         let mut errors: HashSet<String> = HashSet::new();
+        let udp_map = get_parsed_data();
 
         for _ in 0..self.batch_size {
             if let Some(socket) = socket_iterator.next() {
-                ftrs.push(self.scan_socket(socket));
+                ftrs.push(self.scan_socket(socket, udp_map.clone()));
             } else {
                 break;
             }
@@ -101,7 +99,7 @@ impl Scanner {
 
         while let Some(result) = ftrs.next().await {
             if let Some(socket) = socket_iterator.next() {
-                ftrs.push(self.scan_socket(socket));
+                ftrs.push(self.scan_socket(socket, udp_map.clone()));
             }
 
             match result {
@@ -133,19 +131,13 @@ impl Scanner {
     /// ```
     ///
     /// Note: `self` must contain `self.ip`.
-    async fn scan_socket(&self, socket: SocketAddr) -> io::Result<SocketAddr> {
+    async fn scan_socket(
+        &self,
+        socket: SocketAddr,
+        udp_map: BTreeMap<Vec<u16>, Vec<u8>>,
+    ) -> io::Result<SocketAddr> {
         if self.udp {
-            let payload = cust_payload(socket.port());
-
-            let tries = self.tries.get();
-            for _ in 1..=tries {
-                match self.udp_scan(socket, &payload, self.timeout).await {
-                    Ok(true) => return Ok(socket),
-                    Ok(false) => continue,
-                    Err(e) => return Err(e),
-                }
-            }
-            return Ok(socket);
+            return self.scan_udp_socket(socket, udp_map).await;
         }
 
         let tries = self.tries.get();
@@ -180,6 +172,30 @@ impl Scanner {
         unreachable!();
     }
 
+    async fn scan_udp_socket(
+        &self,
+        socket: SocketAddr,
+        udp_map: BTreeMap<Vec<u16>, Vec<u8>>,
+    ) -> io::Result<SocketAddr> {
+        let mut payload: Vec<u8> = Vec::new();
+        for (key, value) in udp_map {
+            if key.contains(&socket.port()) {
+                payload = value;
+            }
+        }
+
+        let tries = self.tries.get();
+        for _ in 1..=tries {
+            match self.udp_scan(socket, &payload, self.timeout).await {
+                Ok(true) => return Ok(socket),
+                Ok(false) => continue,
+                Err(e) => return Err(e),
+            }
+        }
+
+        Ok(socket)
+    }
+
     /// Performs the connection to the socket with timeout
     /// # Example
     ///
@@ -203,7 +219,7 @@ impl Scanner {
         Ok(stream)
     }
 
-    /// Binds to a UDP socket so we can send and recieve packets
+    /// Binds to a UDP socket so we can send and receive packets
     /// # Example
     ///
     /// ```compile_fail
