@@ -89,6 +89,10 @@ pub struct Opts {
     #[arg(short, long)]
     pub no_config: bool,
 
+    /// Hide the banner
+    #[arg(long)]
+    pub no_banner: bool,
+
     /// Custom path to config file
     #[arg(short, long, value_parser)]
     pub config_path: Option<PathBuf>,
@@ -150,6 +154,10 @@ pub struct Opts {
     /// A list of comma separated ports to be excluded from scanning. Example: 80,443,8080.
     #[arg(short, long, value_delimiter = ',')]
     pub exclude_ports: Option<Vec<u16>>,
+
+    /// A list of comma separated CIDRs, IPs, or hosts to be excluded from scanning.
+    #[arg(short = 'x', long = "exclude-addresses", value_delimiter = ',')]
+    pub exclude_addresses: Option<Vec<String>>,
 
     /// UDP scanning mode, finds UDP ports that send back responses
     #[arg(long)]
@@ -217,7 +225,7 @@ impl Opts {
             self.ports = Some(ports);
         }
 
-        merge_optional!(range, resolver, ulimit, exclude_ports);
+        merge_optional!(range, resolver, ulimit, exclude_ports, exclude_addresses);
     }
 }
 
@@ -237,10 +245,12 @@ impl Default for Opts {
             resolver: None,
             scan_order: ScanOrder::Serial,
             no_config: true,
+            no_banner: false,
             top: false,
             scripts: ScriptsRequired::Default,
             config_path: None,
             exclude_ports: None,
+            exclude_addresses: None,
             udp: false,
         }
     }
@@ -266,6 +276,7 @@ pub struct Config {
     command: Option<Vec<String>>,
     scripts: Option<ScriptsRequired>,
     exclude_ports: Option<Vec<u16>>,
+    exclude_addresses: Option<Vec<String>>,
     udp: Option<bool>,
 }
 
@@ -281,7 +292,7 @@ impl Config {
     /// addresses = ["127.0.0.1", "127.0.0.1"]
     /// ports = [80, 443, 8080]
     /// greppable = true
-    /// scan_order: "Serial"
+    /// scan_order = "Serial"
     /// exclude_ports = [8080, 9090, 80]
     /// udp = false
     ///
@@ -340,6 +351,7 @@ mod tests {
                 scan_order: Some(ScanOrder::Random),
                 scripts: None,
                 exclude_ports: None,
+                exclude_addresses: None,
                 udp: Some(false),
             }
         }
